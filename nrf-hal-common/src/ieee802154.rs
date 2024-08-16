@@ -15,6 +15,45 @@ use crate::{
     timer::{self, Timer},
 };
 
+pub enum RecvStatus {
+    NotDone,
+    Success(u16),
+    CrcFailure(u16),
+}
+
+/// Non-blocking receive
+pub struct Recv<'a, 'c> {
+    radio: &'a mut Radio<'c>,
+}
+
+impl<'a, 'c> Recv<'a, 'c> {
+    fn new(radio: &'a mut Radio<'c>) -> Self {
+        Self { radio }
+    }
+
+    pub fn is_done(&mut self) -> RecvStatus {
+        if self.radio.radio.events_end.read().events_end().bit_is_set() {
+            self.radio.radio.events_end.reset();
+
+            let crc = self.radio.radio.rxcrc.read().rxcrc().bits() as u16;
+
+            if self.radio.radio.crcstatus.read().crcstatus().bit_is_set() {
+                RecvStatus::Success(crc)
+            } else {
+                RecvStatus::CrcFailure(crc)
+            }
+        } else {
+            RecvStatus::NotDone
+        }
+    }
+}
+
+impl<'a, 'c> Drop for Recv<'a, 'c> {
+    fn drop(&mut self) {
+        self.radio.cancel_recv();
+    }
+}
+
 /// IEEE 802.15.4 radio
 pub struct Radio<'c> {
     radio: RADIO,
@@ -321,6 +360,19 @@ impl<'c> Radio<'c> {
         } else {
             Err(crc)
         }
+    }
+
+    /// Receives one radio packet and copies its contents into the given `packet` buffer
+    ///
+    /// This method is non-blocking
+    pub fn recv_non_blocking(&mut self, packet: &mut Packet) -> Recv<'_, 'c> {
+        // Start the read
+        // NOTE(unsafe) We block until reception completes or errors
+        unsafe {
+            self.start_recv(packet);
+        }
+
+        Recv::new(self)
     }
 
     /// Listens for a packet for no longer than the specified amount of microseconds
